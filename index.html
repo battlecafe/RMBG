@@ -110,6 +110,7 @@
 <header>
   <h1>智能超清抠图换背景 © Yu Fan</h1>
   <span class="badge" id="modelBadge"><span class="dot"></span><span id="modelStatus">正在加载模型…</span></span>
+  <div id="mprog" style="display:none;max-width:240px;height:6px;background:#0f1420;border:1px solid #2a3448;border-radius:6px;overflow:hidden"><div id="mbar" style="height:100%;width:0%;background:linear-gradient(90deg,#4b8bff,#22d3ee);transition:width .15s"></div></div>
 </header>
 
 <main>
@@ -324,27 +325,34 @@ async function idbPut(key,val){
 /* ========================= 模型下载 ========================= */
 async function fetchModel(){
   setModel("正在下载模型 (约84MB)…","busy");
+  const prog=$("mprog"), bar=$("mbar");
+  prog.style.display="block"; bar.style.width="0%";
   let lastErr=null;
   for(let s=0;s<MODEL_SOURCES.length;s++){
     const src=MODEL_SOURCES[s];
     try{
       const resp=await fetch(src,{mode:"cors",cache:"no-store"});
       if(!resp.ok || !resp.body) throw new Error("HTTP "+resp.status+" @ "+(""+src).split("/").pop());
+      const total=+(resp.headers.get("Content-Length")||0);
       const reader=resp.body.getReader();
-      const chunks=[];
+      const chunks=[]; let recv=0;
       for(;;){
         const {done,value}=await reader.read();
         if(done) break;
-        chunks.push(value);
+        chunks.push(value); recv+=value.byteLength;
+        if(total){ const pct=Math.min(99,Math.round(recv/total*100));
+          bar.style.width=pct+"%"; setModel("正在下载模型 (约84MB) "+pct+"%…","busy"); }
       }
       const blob=new Blob(chunks,{type:"application/octet-stream"});
       const buf=await blob.arrayBuffer();
       await idbPut(MODEL_KEY,buf);            // 缓存到浏览器(IndexedDB)：下次访问免重下载
+      bar.style.width="100%"; prog.style.display="none";
       setModel("模型已就绪（已缓存）","ready");
       modelBytesCached=true;
       return buf;
-    }catch(e){ lastErr=e; }
+    }catch(e){ prog.style.display="none"; lastErr=e; }
   }
+  prog.style.display="none";
   throw lastErr || new Error("无法下载模型");
 }
 async function createSession(buf){
