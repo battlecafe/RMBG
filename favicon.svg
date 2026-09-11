@@ -6,14 +6,21 @@
     </linearGradient>
   </defs>
   <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-  <!-- 被剪切剥离的背景碎屑（表示"抠出"） -->
-  <rect x="7" y="41" width="16" height="16" rx="3" fill="#ffce3a"/>
-  <!-- 被抠出的主体人物（大块白色，强对比、小尺寸也醒目） -->
-  <circle cx="32" cy="21" r="13" fill="#ffffff"/>
-  <path d="M13.5 59 C16 44 24 36 32 36 S48 44 50.5 59 Z" fill="#ffffff"/>
-  <!-- 剪切虚线：把主体与背景碎屑"剪"开 -->
-  <line x1="52" y1="13" x2="16" y2="49" stroke="#ffffff" stroke-width="2.3"
-        stroke-dasharray="4 3.5" stroke-linecap="round"/>
-  <!-- 底部一小块二次剥离的碎屑，强化"背景分离" -->
-  <rect x="48" y="48" width="10" height="9" rx="2" fill="#ffffff" opacity="0.9"/>
+  <!-- 外圈虚线放大剪影：原背景边缘轮廓被剪开、等待更换的印记 -->
+  <g fill="none" stroke="#ffffff" stroke-width="1.7" stroke-dasharray="4.5 3" opacity="0.95">
+    <circle cx="32" cy="22" r="18"/>
+    <path d="M6 58 C10 42 20 33 32 33 S54 42 58 58 Z"/>
+  </g>
+  <!-- 左下角被剪切剥离的背景碎屑 -->
+  <rect x="6" y="42" width="14" height="15" rx="3" fill="#ffce3a"/>
+  <!-- 实心主体（被抠出的人） -->
+  <circle cx="32" cy="22" r="12" fill="#ffffff"/>
+  <path d="M15 58 C18 44 25 37 32 37 S46 44 49 58 Z" fill="#ffffff"/>
+  <!-- 头部右侧小剪刀（抠图工具） -->
+  <g transform="translate(43 12) rotate(-38) scale(0.62)">
+    <line x1="0" y1="-3.5" x2="13" y2="2.5" stroke="#ffce3a" stroke-width="3.4" stroke-linecap="round"/>
+    <line x1="0" y1="3.5" x2="13" y2="-2.5" stroke="#ffce3a" stroke-width="3.4" stroke-linecap="round"/>
+    <circle cx="0" cy="-4" r="2.4" fill="#ffce3a"/>
+    <circle cx="0" cy="4" r="2.4" fill="#ffce3a"/>
+  </g>
 </svg>
