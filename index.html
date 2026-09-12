@@ -424,8 +424,11 @@ function loadImageFromFile(file){
     autoDFMap=null;   // 新图清空去细线重建标记，避免与上图的 stale 状态错配
     pCache.hair=-1; pCache.ds=null;   // 新图缓存全部失效
     clearTimeout(defringeTimer);
-    pickMode=false; pickType='erase'; eraseLive=null; eraserMask=null; keepMask=null; eraseOnes=[]; keepOnes=[]; eraseStack=[]; eraseRedoStack=[]; srcPix=null;   // 补救/反选状态重置
+    pickMode=false; pickType='erase'; eraserMask=null; keepMask=null; eraseOnes=[]; keepOnes=[]; eraseStack=[]; eraseRedoStack=[]; srcPix=null;   // 补救/反选状态重置
     eraseF={dirty:true, band:null, fac:null}; eraseBandSrc=null; eraseSrcDirty=false;
+    // 图片解码已完成：立即显示原图，AI 推理在后台进行，不让模型下载阻塞「读取」与预览
+    setBusy(false,"");
+    previewOriginal();
     runFull(); URL.revokeObjectURL(url);
   };
   img.onerror=()=>{ setBusy(false,"图片读取失败"); URL.revokeObjectURL(url); };
