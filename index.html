@@ -140,11 +140,6 @@
         <small>支持 PNG、JPG、WebP、GIF、BMP、SVG、AVIF 等浏览器可解码格式（iPhone 的 HEIC 请先转成 JPG）；抠图后保持原分辨率导出</small>
       </div>
       <canvas id="show" width="960" height="960"></canvas>
-      <div id="eraseFloat" style="display:none">
-        <div class="ef-title">取色点 · 调整颜色容差（实时预览）</div>
-        <div class="ef-row"><span class="ef-swatch" id="efSwatch"></span><input type="range" id="eTol" min="0" max="100" step="1" value="30" title="颜色相近判定阈值：越小只去除颜色几乎一致的像素，越大连相近色一起去除"><input type="number" id="eTolNum" class="num" min="0" max="100" step="1" value="30" inputmode="decimal"></div>
-        <div class="ef-foot"><span id="efCount"></span><button class="btn" id="efDone">完成</button></div>
-      </div>
       <input type="file" id="fileInput" accept="image/*" class="hide">
     </div>
   </section>
@@ -201,13 +196,25 @@
 <input type="number" id="sFeatherNum" class="num" min="0" max="10" step="1" value="0" inputmode="decimal"></div>
       <div class="hint">0–10（切向抗锯齿强度，0 即有默认去锯齿）；0–5 平滑又清晰，更大值更柔、慎用</div>
       <div class="row" style="align-items:center;margin-top:14px">
-        <button class="btn" id="btnErase" title="点击画面中的残留色块，把与其颜色相近的连续区域从主体中剥离（抹除残留）">🎯 补救取色</button>
-        <button class="btn" id="btnRestore" title="点击画面中被误删的部分，把与其颜色相近的连续被抹除区域恢复为主体（反选取色）">🔄 反选取色</button>
+        <button class="btn" id="btnRestore" title="白色画线：划过要保留的地方（误删主体、发丝），松手自动把与其同色的整片区域恢复为主体">✅ 勾选 · 保留</button>
+        <button class="btn" id="btnErase" title="白色画线：划过要去掉的残留或背景，松手自动圈选与其同色的整片区域并删除">🗑 反选 · 去除</button>
         <button class="btn" id="btnEraseUndo" title="撤销上一次补救/反选操作" disabled>↩ 撤销</button>
         <button class="btn" id="btnEraseRedo" title="重做上一次被撤销的补救/反选操作" disabled>↪ 重做</button>
         <button class="btn" id="btnEraseClear" title="清除所有补救/反选，恢复原抠图结果" disabled>✖ 清空</button>
       </div>
       <div class="hint" id="eraseStat" style="display:none"></div>
+
+      <div class="row" style="margin-top:18px;align-items:center"><b style="font-size:13px">边缘精修 · 发丝 / 薄纱半透明</b></div>
+      <div class="desc">蓝色画笔在发丝·薄纱边缘涂抹标记精修区；不涂抹时拖「优化边缘宽度」滑条会自动识别边缘。点「优化」在标记带内局部重抠并向外半透明。</div>
+      <div class="row"><label style="width:78px">优化边缘宽度</label>
+        <input type="range" id="sEdgeW" min="0" max="100" step="1" value="40" title="优化边缘宽度：0≈所涂细线宽度，100≈半透明向外延伸最宽">
+        <input type="number" id="sEdgeWNum" class="num" min="0" max="100" step="1" value="40" inputmode="decimal"></div>
+      <div class="row" style="align-items:center">
+        <button class="btn" id="btnEdgeMark" title="在人物边缘涂抹蓝色标记精修区（发丝/薄纱）；不涂抹时拖宽滑条会自动识别边缘">🖌 涂抹精修区</button>
+        <button class="btn" id="btnRunEdge" title="在标记/自动识别的边缘带内局部重抠并向外半透明（发丝与薄纱质感）">✨ 优化边缘</button>
+        <button class="btn" id="btnEdgeUndo" title="撤销上一次边缘优化" disabled>↩ 优化撤销</button>
+      </div>
+      <div class="hint" id="edgeStat" style="display:none"></div>
     </div>
   </div>
 </main>
@@ -432,11 +439,11 @@ function loadBgFromFile(file){
   img.src=url;
 }
 /* ========================= 预处理 / 推理 / 后处理 ========================= */
-function preprocess(src){
+function preprocess(src, iw, ih){
   const c=document.createElement("canvas"); c.width=WORK; c.height=WORK;
   const ctx=c.getContext("2d",{willReadFrequently:true});
-  const scale=Math.min(WORK/origW, WORK/origH);
-  const dw=origW*scale, dh=origH*scale;
+  const scale=Math.min(WORK/iw, WORK/ih);
+  const dw=iw*scale, dh=ih*scale;
   const offX=(WORK-dw)/2, offY=(WORK-dh)/2;
   ctx.drawImage(src, offX, offY, dw, dh);
   const data=ctx.getImageData(0,0,WORK,WORK).data;
@@ -454,7 +461,7 @@ async function infer(){
   setBusy(true,"自动抠图中…");
   await new Promise(r=>setTimeout(r,30));
   try{
-    const {tensor, layout:lay}=preprocess(srcImg);
+    const {tensor, layout:lay}=preprocess(srcImg, origW, origH);
     layout=lay;
     const feeds={}; feeds[ortSession.inputNames[0]]=tensor;
     const out=await ortSession.run(feeds);
@@ -1035,84 +1042,67 @@ function flashErase(msg){
   el.textContent=msg;
   el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
 }
-/* —— 补救取色 / 反选取色：点击先用「适中容差」执行，再于点击处弹出浮动容差条，拖动实时重算预览。
-   补救=抹除主体残留（与点击色相近连通的「未抹且主体内」像素→透明）；
-   反选=恢复误删（与点击色相近连通的「已抹」像素→重新成为不透明主体）。 —— */
-let eraseLive=null;            // 当前取色锚点 {k,r,g,b,type:'erase'|'restore'}
-let repT=0, repaintTol=null;   // 容差实时预览节流（rAF 合并同帧多次输入）
+/* —— 勾选 / 反选（画线识别区域）：按住划过目标区域取样颜色，松手自动推断目标色域，
+   把与整条笔迹同色的连通区域整体选中 —— 勾选=恢复为主体（保留），反选=抹除为背景（去除）。
+   无颜色容差滑条：容差由笔迹颜色分布自动推断。 —— */
 /* —— 取色匹配：锚点相对容差 + 邻域梯度 + 可跳跃间隙 + 感知容差曲线 —— */
 function colMatch(pp,cr,cg,cb,thr2){ const p4=pp*4; const dr=srcPix[p4]-cr, dg=srcPix[p4+1]-cg, db=srcPix[p4+2]-cb; return dr*dr+dg*dg+db*db<=thr2; }
 function colDist2(a,b){ const p4=a*4,p5=b*4; const dr=srcPix[p4]-srcPix[p5], dg=srcPix[p4+1]-srcPix[p5+1], db=srcPix[p4+2]-srcPix[p5+2]; return dr*dr+dg*dg+db*db; }
 const ERASE_GRAD=22;              // ①邻域梯度上限：卡住颜色/亮度突变，防止越过物体边缘蔓延到无关区域
 const ERASE_GAP=2;                // ②可跳跃间隙：允许穿过 ≤GAP 个颜色偏离的桥接像素，弥补低档被噪点/细缝切断的漏识
-function tolToThr(tol){ return 141*tol/(tol+45); }   // ③感知容差曲线：低端细腻、高端收敛（0→0、100→97）
-/* ①+②+③ 融合版补救连通域：锚点相对容差控「贴合」，邻域梯度控「不跨物体边界」，
-   gap 桥接控「补小缝」，超限截断保留而非整块回滚，保证始终能取上色 */
-function eraseFlood(k, tol){
-  if(!eraserMask) eraserMask=new Uint8Array(PW*PH);
-  const W=PW,H=PH;
-  const pb=k*4, cr=srcPix[pb], cg=srcPix[pb+1], cb=srcPix[pb+2];
-  const thr2=Math.pow(tolToThr(tol),2);
-  const grad2=ERASE_GRAD*ERASE_GRAD;
-  const A_MIN=0.06;
-  const erasedStart=!!eraserMask[k];
-  const seen=new Uint8Array(W*H); seen[k]=1;
-  const q=[[k,ERASE_GAP]]; let qh=0;                   // [idx, 剩余可桥接缺口]
-  const removed=erasedStart?[]:[k];
-  if(!eraserMask[k]) eraserMask[k]=1;
-  let truncated=false;
-  const probe=(pp,src,gapLeft)=>{
-    if(rawAlpha[pp] < A_MIN) return;                   // 蔓延限主体内，防吞整片背景
-    if(eraserMask[pp]===1){ if(erasedStart) q.push([pp,ERASE_GAP]); return; }  // 已抹区可穿越继续找残留
-    const localOK = colDist2(pp,src)<=grad2;           // 邻域连续（梯度约束）：必须同时满足才能纳入
-    if(colMatch(pp,cr,cg,cb,thr2) && localOK){         // 锚点贴合 且 不跨颜色突变边界
-      eraserMask[pp]=1; removed.push(pp); q.push([pp,ERASE_GAP]);
-      return;
-    }
-    if(!localOK) return;                                // 邻域突变=物体边界，直接卡住（含桥）
-    if(gapLeft>0) q.push([pp,gapLeft-1]);               // 桥：穿过少量不匹配像素补小缝
-  };
-  while(qh<q.length){
-    if(removed.length>=MAX_ERASE){ truncated=true; break; }
-    if(q.length>MAX_WALK){ truncated=true; break; }
-    const cur=q[qh++], p=cur[0], gapLeft=cur[1], px=p%W, py=(p/W)|0;
-    if(px>0 && !seen[p-1]){ seen[p-1]=1; probe(p-1,p,gapLeft); }
-    if(px<W-1 && !seen[p+1]){ seen[p+1]=1; probe(p+1,p,gapLeft); }
-    if(py>0 && !seen[p-W]){ seen[p-W]=1; probe(p-W,p,gapLeft); }
-    if(py<H-1 && !seen[p+W]){ seen[p+W]=1; probe(p+W,p,gapLeft); }
-  }
-  if(removed.length===0){ if(!erasedStart&&eraserMask[k])eraserMask[k]=0; return {list:null,noop:true,msg:"该区域当前透明，四周也无同色残留可剥离"}; }
-  return {list:removed, truncated};
+/* —— 画线识别区域：整条笔迹作色样 → 自动推断目标色域 → 以全部笔迹像素为种子多起点连通扩展 —— */
+function pickRef(rs,gs,bs){
+  const n=rs.length, m=(n-1)>>1;
+  rs=rs.slice().sort((a,b)=>a-b); gs=gs.slice().sort((a,b)=>a-b); bs=bs.slice().sort((a,b)=>a-b);
+  return [rs[m], gs[m], bs[m]];
 }
-/* 反选恢复连通域：起点须是被抹除的；只限透明区(已抹或模型自动背景)蔓延、不误补主体，同带 ①梯度+②桥接+③感知曲线 */
-function isTransparent(pp){ return eraserMask[pp]===1 || rawAlpha[pp] < 0.5; }   // 透明区：被补救抹除 或 模型自动抠掉的背景
-function restoreFlood(k, tol){
+function autoThr2(rs,gs,bs,cr,cg,cb){
+  const ds=new Array(rs.length);
+  for(let i=0;i<rs.length;i++) ds[i]=(rs[i]-cr)**2+(gs[i]-cg)**2+(bs[i]-cb)**2;
+  ds.sort((a,b)=>a-b);
+  const p=ds[Math.min(ds.length-1, Math.floor(ds.length*0.88))];
+  return Math.max(p*1.1, 36);
+}
+function growRegion(seeds, mode){
   if(!eraserMask) eraserMask=new Uint8Array(PW*PH);
   if(!keepMask) keepMask=new Uint8Array(PW*PH);
   const W=PW,H=PH;
-  if(!isTransparent(k)) return {list:null,noop:true,msg:"该处为不透明主体，无需恢复；请点击被工具抠掉或被补救抹除的透明区域"};
-  const pb=k*4, cr=srcPix[pb], cg=srcPix[pb+1], cb=srcPix[pb+2];
-  const thr2=Math.pow(tolToThr(tol),2);
-  const grad2=ERASE_GRAD*ERASE_GRAD;
-  const seen=new Uint8Array(W*H); seen[k]=1;
-  const q=[[k,ERASE_GAP]]; let qh=0; const restored=[k];
-  const probe=(pp,src,gapLeft)=>{
-    if(!isTransparent(pp)) return;                       // 只在透明区蔓延，不误补未透明主体
-    const localOK = colDist2(pp,src)<=grad2;             // 邻域连续：须与来源色接近，防跨颜色突变边界
-    if(colMatch(pp,cr,cg,cb,thr2) && localOK){ restored.push(pp); q.push([pp,ERASE_GAP]); return; }
-    if(!localOK) return;
-    if(gapLeft>0) q.push([pp,gapLeft-1]);                // 桥接补缝
+  const restored = mode==='restore';
+  const grad2=ERASE_GRAD*ERASE_GRAD, A_MIN=0.06, GAP=ERASE_GAP;
+  const rs=[],gs=[],bs=[], seedSet=new Set();
+  for(const k of seeds){
+    if(k<0||k>=W*H||seedSet.has(k)) continue;
+    const p4=k*4; rs.push(srcPix[p4]); gs.push(srcPix[p4+1]); bs.push(srcPix[p4+2]); seedSet.add(k);
+  }
+  if(!seedSet.size) return {list:null, noop:true, msg: restored?"请划过一段已被去除的透明区域后再松开":"请划过主体区域的颜色后再松开"};
+  const ref=pickRef(rs,gs,bs), cr=ref[0], cg=ref[1], cb=ref[2];
+  const thr2=autoThr2(rs,gs,bs,cr,cg,cb);
+  const seen=new Uint8Array(W*H);
+  const q=[]; let qh=0; const out=[];
+  for(const k of seedSet){
+    if(seen[k]) continue;
+    const a=rawAlpha[k], er=eraserMask[k]===1;
+    if(restored ? !(er||a<0.5) : a<A_MIN) continue;
+    seen[k]=1; out.push(k); q.push([k,GAP]);
+  }
+  if(!out.length) return {list:null, noop:true, msg: restored?"请划过已被去除的透明区域再松开":"请划过主体内的残留颜色再松开"};
+  const probe=(pp,src,gap)=>{
+    if(seen[pp]) return;
+    seen[pp]=1;
+    if(restored ? !(eraserMask[pp]===1||rawAlpha[pp]<0.5) : rawAlpha[pp]<A_MIN) return;   // 边界/非法区停：防越物体边缘蔓延
+    const localOK=colDist2(pp,src)<=grad2;                   // 邻域连续：须与来源色接近
+    if(colMatch(pp,cr,cg,cb,thr2) && localOK){ out.push(pp); q.push([pp,GAP]); }
+    else if(localOK && gap>0) q.push([pp,gap-1]);            // 可跳跃间隙：补小缝
   };
   while(qh<q.length){
-    if(restored.length>=MAX_ERASE) break;
-    if(q.length>MAX_WALK) break;
-    const cur=q[qh++], p=cur[0], gapLeft=cur[1], px=p%W, py=(p/W)|0;
-    if(px>0 && !seen[p-1]){ seen[p-1]=1; probe(p-1,p,gapLeft); }
-    if(px<W-1 && !seen[p+1]){ seen[p+1]=1; probe(p+1,p,gapLeft); }
-    if(py>0 && !seen[p-W]){ seen[p-W]=1; probe(p-W,p,gapLeft); }
-    if(py<H-1 && !seen[p+W]){ seen[p+W]=1; probe(p+W,p,gapLeft); }
+    if(out.length>=MAX_ERASE || q.length>MAX_WALK) break;
+    const cur=q[qh++], p=cur[0], gap=cur[1], x=p%W, y=(p/W)|0;
+    if(x>0) probe(p-1,p,gap);
+    if(x<W-1) probe(p+1,p,gap);
+    if(y>0) probe(p-W,p,gap);
+    if(y<H-1) probe(p+W,p,gap);
   }
-  return {list:restored, truncated: restored.length>=MAX_ERASE};
+  return {list: out, truncated: out.length>=MAX_ERASE};
 }
 /* —— 应用到 eraserMask/keepMask 及其并行索引数组 —— */
 function mergeIdx(base, list){ if(!base.length) return list.slice(); const s=new Set(base); for(const v of list) s.add(v); return Array.from(s); }
@@ -1147,14 +1137,13 @@ function initSrcPixIf(){
   const c2=c.getContext("2d",{willReadFrequently:true}); c2.drawImage(srcImg,0,0);
   srcPix=c2.getImageData(0,0,PW,PH).data;
 }
-/* —— ④ 拖动圈选式：pickMode 时按住拖动，沿轨迹以当前容差累积连通域（补抹/恢复），
-      单点点击仍保留「弹浮条微调容差」，松手聚合成一条可撤销操作 —— */
-let stroke=null, strokeRAF=0, pan=null;   // pan 提升到模块级：startStroke 与 bindUI 内指针处理器共用
+/* —— 画线识别：pickMode 时按住拖动收集笔迹颜色样本，松手按整条笔迹自动推断色域、
+   多起点连通扩展，选中与其同色的整片区域，聚合为一条可撤销操作 —— */
+let stroke=null, pan=null;
 function startStroke(e){
-  if(!rawAlpha){ flashErase(pickType==='restore'?"请先完成抠图，再使用反选取色":"请先完成抠图，再使用补救取色"); return; }
+  if(!rawAlpha){ flashErase(pickType==='restore'?"请先完成抠图，再使用勾选·保留":"请先完成抠图，再使用反选·去除"); return; }
   initSrcPixIf();
-  hideEraseFloat();
-  stroke={ active:true, type:pickType, moved:false, firstK:-1, firstX:e.clientX, firstY:e.clientY, visited:new Set(), list:[], prevErased:new Set() };
+  stroke={ active:true, type:pickType, samples:[], visited:new Set() };
   pan=null; $("wrap").classList.remove("dragning");
   try{ $("wrap").setPointerCapture(e.pointerId); }catch(_){}
   strokeAdd(e.clientX,e.clientY);
@@ -1167,108 +1156,24 @@ function strokeAdd(cx,cy){
   const x=Math.floor((cx-rect.left)/rect.width*W), y=Math.floor((cy-rect.top)/rect.height*H);
   if(x<0||y<0||x>=W||y>=H) return;
   const k=y*W+x; if(stroke.visited.has(k)) return; stroke.visited.add(k);
-  if(stroke.firstK<0){ stroke.firstK=k; }
-  const tol=clamp(+($("eTol").value),0,100)||30;
-  const res = stroke.type==='restore' ? restoreFlood(k,tol) : eraseFlood(k,tol);
-  if(!res.list) return;
-  if(stroke.type==='restore'){
-    for(let i=0;i<res.list.length;i++){ const p=res.list[i]; stroke.list.push(p); if(eraserMask[p]===1) stroke.prevErased.add(p); }
-    applyRestoreList(res.list);
-  }else{
-    for(let i=0;i<res.list.length;i++) stroke.list.push(res.list[i]);
-    applyEraseList(res.list);
-  }
-  if(!strokeRAF) strokeRAF=requestAnimationFrame(()=>{ strokeRAF=0; if(stroke){ redrawErase(false); syncEraseUI(); } });
+  stroke.samples.push(k);
 }
 function endStroke(){
   if(!stroke) return;
   const s=stroke; stroke=null;
-  if(strokeRAF){ cancelAnimationFrame(strokeRAF); strokeRAF=0; }
-  if(s.list.length){
-    const idx=Int32Array.from(new Set(s.list));
-    const wasErased = s.type==='restore' ? Int32Array.from(s.prevErased) : null;
-    eraseRedoStack.length=0;
-    eraseStack.push({ t:s.type==='restore'?'r':'e', idx, wasErased });
+  if(s.samples.length){
+    const res=growRegion(s.samples, s.type==='restore'?'restore':'erase');
+    if(res.noop || !res.list){ flashErase(res.msg||"未识别到可选框，请换个位置划过"); }
+    else{
+      const wasErased = s.type==='restore' ? Int32Array.from(res.list.filter(p=>eraserMask[p]===1)) : null;
+      if(s.type==='restore') applyRestoreList(res.list); else applyEraseList(res.list);
+      eraseRedoStack.length=0;
+      eraseStack.push({ t:s.type==='restore'?'r':'e', idx:Int32Array.from(new Set(res.list)), wasErased });
+    }
   }
-  redrawErase(false); syncEraseUI();
-  if(!s.moved && s.firstK>=0 && s.list.length){   // 单点：弹浮条继续微调容差
-    const k=s.firstK;
-    eraseLive={ k, r:srcPix[k*4], g:srcPix[k*4+1], b:srcPix[k*4+2], type:s.type };
-    showEraseFloat(s.firstX, s.firstY, clamp(+($("eTol").value),0,100)||30, new Set(s.list).size);
-  }
+  redrawErase(true); syncEraseUI();
 }
-/* 点击入口：补救取色 */
-function eraseAt(clientX,clientY){
-  const W=PW,H=PH; if(!W||!H||!srcImg) return;
-  if(!rawAlpha){ flashErase("请先完成抠图，再使用补救取色"); return; }
-  const rect=$("show").getBoundingClientRect();
-  const x=Math.floor((clientX-rect.left)/rect.width*W), y=Math.floor((clientY-rect.top)/rect.height*H);
-  if(x<0||y<0||x>=W||y>=H){ flashErase("请点击画面中的残留色块"); return; }
-  initSrcPixIf();
-  const k=y*W+x, tol0=30;
-  const res=eraseFlood(k, tol0);
-  if(!res.list){ flashErase(res.msg); return; }
-  applyEraseList(res.list);
-  eraseRedoStack.length=0;
-  eraseStack.push({t:'e', idx:Int32Array.from(res.list)});
-  eraseLive={k, r:srcPix[k*4], g:srcPix[k*4+1], b:srcPix[k*4+2], type:'erase'};
-  redrawErase(true); showEraseFloat(clientX,clientY,tol0,res.list.length); syncEraseUI();
-  flashErase(res.truncated? `已去掉 ${res.list.length} 像素（块较大且已限幅，调小容差可聚焦局部）` : `已去掉 ${res.list.length} 像素；拖动画面上的容差条实时调整`);
-}
-/* 点击入口：反选取色 */
-function restoreAt(clientX,clientY){
-  const W=PW,H=PH; if(!W||!H||!srcImg) return;
-  if(!rawAlpha){ flashErase("请先完成抠图，再使用反选取色"); return; }
-  const rect=$("show").getBoundingClientRect();
-  const x=Math.floor((clientX-rect.left)/rect.width*W), y=Math.floor((clientY-rect.top)/rect.height*H);
-  if(x<0||y<0||x>=W||y>=H){ flashErase("请点击被工具抠掉或被补救抹除的透明区域"); return; }
-  initSrcPixIf();
-  const k=y*W+x, tol0=30;
-  const res=restoreFlood(k, tol0);
-  if(!res.list){ flashErase(res.msg); return; }
-  const wasErased=Int32Array.from(res.list.filter(p=>eraserMask[p]===1));
-  applyRestoreList(res.list);
-  eraseRedoStack.length=0;
-  eraseStack.push({t:'r', idx:Int32Array.from(res.list), wasErased});
-  eraseLive={k, r:srcPix[k*4], g:srcPix[k*4+1], b:srcPix[k*4+2], type:'restore'};
-  redrawErase(true); showEraseFloat(clientX,clientY,tol0,res.list.length); syncEraseUI();
-  flashErase(res.truncated? `已恢复 ${res.list.length} 像素（较多，调小容差可聚焦）` : `已恢复 ${res.list.length} 像素；拖容差条实时调整`);
-}
-/* 容差实时预览：撤销最近一次操作，改以锚点+新容差重算（抹除或恢复），直接看渲染变化 */
-function repaint(tol){
-  if(!eraseLive) return;
-  const k=eraseLive.k, isR=eraseLive.type==='restore';
-  const op=eraseStack[eraseStack.length-1];
-  if(op){ if(op.t==='e') invertEraseList(op.idx); else invertRestoreList(op.idx, op.wasErased); eraseStack.pop(); }
-  const res= isR? restoreFlood(k,tol) : eraseFlood(k,tol);
-  if(res.list){ const wasErased = isR? Int32Array.from(res.list.filter(p=>eraserMask[p]===1)) : null;
-    if(isR) applyRestoreList(res.list); else applyEraseList(res.list);
-    eraseRedoStack.length=0;
-    eraseStack.push({t:isR?'r':'e', idx:Int32Array.from(res.list), wasErased}); updateCount(res.list.length); }
-  else if(eraseLive){ flashErase(res.msg); }
-  redrawErase(false); syncEraseUI();
-}
-function scheduleRepaint(tol){
-  repaintTol=tol;
-  if(repT) return;
-  repT=requestAnimationFrame(()=>{ repT=0; if(repaintTol!==null){ const t=repaintTol; repaintTol=null; repaint(t); } });
-}
-function showEraseFloat(cx,cy,tol,count){
-  const wr=$("wrap"), r=wr.getBoundingClientRect(), el=$("eraseFloat");
-  el.style.display="block";
-  const w=252, h=128;
-  let x=cx-r.left+wr.scrollLeft, y=cy-r.top+wr.scrollTop;
-  if(x+16+w>wr.scrollLeft+r.width) x=x-16-w; else x=x+16;
-  x=Math.max(wr.scrollLeft+2, Math.min(x, wr.scrollLeft+r.width-w-2));
-  let top=y-32-h;
-  if(top<wr.scrollTop) top=y+20;
-  el.style.left=x+"px"; el.style.top=top+"px";
-  $("efSwatch").style.background=`rgb(${eraseLive.r},${eraseLive.g},${eraseLive.b})`;
-  $("eTol").value=tol; $("eTolNum").value=tol;
-  updateCount(count);
-}
-function updateCount(n){ $("efCount").textContent="共 "+n+" 像素"; }
-function hideEraseFloat(){ eraseLive=null; $("eraseFloat").style.display="none"; }
+function hideEraseFloat(){}
 function eraseUndo(){
   const last=eraseStack.pop();
   if(!last) return;
@@ -1308,6 +1213,200 @@ function syncEraseUI(){
   $("btnRestore").classList.toggle("on",pickMode && pickType==='restore');
   $("wrap").classList.toggle("erasing",pickMode);
 }
+/* ========================= 第2段 · 边缘精修（蓝画笔 + 优化边缘 + 局部重抠） =========================
+   蓝画笔在人物/薄纱边缘涂抹标记精修区；「优化边缘宽度」(0-100) 决定半透明向外延伸量。
+   点「优化」：在标记带(带 bbox)局部重跑本地 RMBG → 边缘带向外半透明(发丝/薄纱质感)。
+   不涂抹时自动按 alpha 梯度识别边缘。无容差滑条。 */
+let edgeMarkMode=false;      // 蓝画笔涂抹模式
+let edgeMarkMask=null;       // Uint8Array PW*PH，1=已标记精修区
+let edgeStack=[];            // 优化撤销栈：存优化前整图 alpha 快照
+let edgeStroke=null;         // 蓝画笔拖拽中
+const EDGE_BRUSH=6;          // 蓝画笔半径
+function edgeMarkAny(){ if(!edgeMarkMask) return false; for(let i=0;i<PW*PH;i++) if(edgeMarkMask[i]) return true; return false; }
+function markCount(){ if(!edgeMarkMask) return 0; let c=0; for(let i=0;i<PW*PH;i++) if(edgeMarkMask[i]) c++; return c; }
+function edgeStrokeStart(e){
+  if(!rawAlpha){ flashErase("请先完成自动抠图，再涂抹精修区"); return; }
+  if(!edgeMarkMask) edgeMarkMask=new Uint8Array(PW*PH);
+  initSrcPixIf();
+  edgeStroke={active:true};
+  pan=null; $("wrap").classList.remove("dragning");
+  try{ $("wrap").setPointerCapture(e.pointerId); }catch(_){}
+  edgeStrokeAdd(e.clientX,e.clientY);
+}
+function edgeStrokeAdd(cx,cy){
+  if(!edgeStroke) return;
+  const W=PW,H=PH; if(!W||!H||!srcImg) return;
+  const rect=$("show").getBoundingClientRect();
+  const x=Math.floor((cx-rect.left)/rect.width*W), y=Math.floor((cy-rect.top)/rect.height*H);
+  if(x<0||y<0||x>=W||y>=H) return;
+  if(!edgeMarkCanvas){ edgeMarkCanvas=document.createElement("canvas"); edgeMarkCanvas.width=W; edgeMarkCanvas.height=H; edgeMarkCanvas.getContext("2d").fillStyle="rgba(59,130,246,0.5)"; }
+  const mctx=edgeMarkCanvas.getContext("2d");
+  for(let dy=-EDGE_BRUSH;dy<=EDGE_BRUSH;dy++) for(let dx=-EDGE_BRUSH;dx<=EDGE_BRUSH;dx++){
+    if(dx*dx+dy*dy>EDGE_BRUSH*EDGE_BRUSH) continue;
+    const xx=x+dx, yy=y+dy; if(xx<0||xx>=W||yy<0||yy>=H) continue;
+    edgeMarkMask[yy*W+xx]=1; mctx.fillRect(xx,yy,1,1);
+  }
+  edgeMarkRefresh();
+}
+function edgeStrokeEnd(){ edgeStroke=null; const c=markCount(); edgeMarkRefresh(); syncEdgeUI(); $("edgeStat").style.display=c?"block":"none"; $("edgeStat").textContent=`已标记精修区 ${c} 像素 · 可点［优化边缘］`; flashErase(c?`已标记 ${c} 像素精修区，点［优化边缘］完成半透明`:"请用蓝色画笔在边缘涂抹，或直接拖宽滑条自动识别"); }
+/* 自动识别边缘带：alpha 梯度大处（主体边界）。 */
+function autoEdgeMask(){
+  const m=new Uint8Array(PW*PH);
+  const a= rawAlpha;
+  const W=PW,H=PH, TH=0.028*0.028;
+  for(let j=1;j<H-1;j++) for(let i=1;i<W-1;i++){
+    const k=j*W+i;
+    const gx=a[k+1]-a[k-1], gy=a[k+W]-a[k-W];
+    if(gx*gx+gy*gy>TH) m[k]=1;
+  }
+  return m;
+}
+function dilateBW(src, r){
+  const W=PW,H=PH, out=new Uint8Array(W*H);
+  const dist=new Int32Array(W*H).fill(1<<28);
+  const q=[]; let qh=0;
+  for(let k=0;k<W*H;k++) if(src[k]){ dist[k]=0; out[k]=1; q.push(k); }
+  while(qh<q.length){
+    const p=q[qh++], d=dist[p]; if(d>=r) continue; const nd=d+1;
+    const x=p%W,y=(p/W)|0;
+    if(x>0){const n=p-1; if(dist[n]>nd){dist[n]=nd; out[n]=1; q.push(n);}}
+    if(x<W-1){const n=p+1; if(dist[n]>nd){dist[n]=nd; out[n]=1; q.push(n);}}
+    if(y>0){const n=p-W; if(dist[n]>nd){dist[n]=nd; out[n]=1; q.push(n);}}
+    if(y<H-1){const n=p+W; if(dist[n]>nd){dist[n]=nd; out[n]=1; q.push(n);}}
+  }
+  return out;
+}
+function buildEdgeBand(){
+  const w=clamp(+$("sEdgeW").value,0,100)||0;
+  const rad=1+Math.round(w/100*15);          // 1..16 像素半透明延伸
+  const src= edgeMarkAny()? edgeMarkMask : autoEdgeMask();
+  return dilateBW(src, rad);
+}
+function bandBBox(band){
+  let x0=PW,y0=PH,x1=0,y1=0, any=false;
+  const W=PW,H=PH;
+  for(let j=0;j<H;j++) for(let i=0;i<W;i++) if(band[j*W+i]){ if(i<x0)x0=i; if(i>x1)x1=i; if(j<y0)y0=j; if(j>y1)y1=j; any=true; }
+  return any? {x:x0,y:y0,w:x1-x0+1,h:y1-y0+1} : null;
+}
+/* 窗口推理后处理：模型输出 [1,1,WORK,WORK] 逆 letterbox 到 (cw×ch) alpha */
+function postprocessRegion(d, cw, ch, lay){
+  const C=WORK;
+  const sc=document.createElement("canvas"); sc.width=C; sc.height=C;
+  const sctx=sc.getContext("2d"); const img=sctx.createImageData(C,C);
+  const n=C*C;
+  for(let i=0,k=0;k<n;k++,i+=4){ const v=d[k]; const a=Math.round((v<=0?0:v>=1?1:v)*255); img.data[i]=img.data[i+1]=img.data[i+2]=255; img.data[i+3]=a; }
+  sctx.putImageData(img,0,0);
+  const full=document.createElement("canvas"); full.width=cw; full.height=ch;
+  const fctx=full.getContext("2d");
+  fctx.drawImage(sc, lay.offsetX,lay.offsetY, lay.scale*cw, lay.scale*ch, 0,0,cw,ch);
+  const rd=fctx.getImageData(0,0,cw,ch).data;
+  const out=new Float32Array(cw*ch);
+  for(let i=0,k=0;k<cw*ch;k++,i+=4) out[k]=rd[i+3]/255;
+  return out;
+}
+/* 局部重抠：仅对 (x0,y0,w,h) 扩边窗口重跑一次本地 RMBG */
+async function inferRegion(x0,y0,w,h, margin){
+  const m=clamp(margin,8,32);
+  const ix=clamp(x0-m,0,PW-1), iy=clamp(y0-m,0,PH-1);
+  const ix2=clamp(x0+w+m,ix,PW), iy2=clamp(y0+h+m,iy,PH);
+  const iw=ix2-ix, ih=iy2-iy;
+  const c=document.createElement("canvas"); c.width=iw; c.height=ih;
+  const ctx=c.getContext("2d",{willReadFrequently:true});
+  ctx.drawImage(srcImg, ix,iy,iw,ih, 0,0,iw,ih);
+  const {tensor, layout}= preprocess(c, iw, ih);
+  const feeds={}; feeds[ortSession.inputNames[0]]=tensor;
+  const out= await ortSession.run(feeds);
+  const alpha= postprocessRegion(out[ortSession.outputNames[0]].data, iw, ih, layout);
+  return {ix,iy,iw,ih, alpha};
+}
+/* 半透明拖尾：带内像素按其距背景外缘的深度做 radius 渐变透明，发丝/薄纱外沿由此出现 */
+function applyBandFade(band, x0,y0,w,h){
+  const W=PW, H=PH, x1=x0+w-1, y1=y0+h-1;
+  const dist=new Float32Array(W*H).fill(-1);
+  const q=[]; let qh=0;
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    const k=y*W+x; if(!band[k]) continue;
+    let outer=false;
+    for(let dy=-1;dy<=1&&!outer;dy++) for(let dx=-1;dx<=1;dx++){
+      const nx=x+dx, ny=y+dy; if(nx<0||nx>=W||ny<0||ny>=H) continue; const nk=ny*W+nx;
+      if(!band[nk] && rawAlpha[nk]<0.5){ outer=true; break; }
+    }
+    if(outer){ dist[k]=0; q.push(k); }
+  }
+  while(qh<q.length){
+    const p=q[qh++], d=dist[p], nd=d+1, x=p%W, y=(p/W)|0;
+    if(x>0){const n=p-1; if(band[n]&&dist[n]<0){dist[n]=nd; q.push(n);}}
+    if(x<W-1){const n=p+1; if(band[n]&&dist[n]<0){dist[n]=nd; q.push(n);}}
+    if(y>0){const n=p-W; if(band[n]&&dist[n]<0){dist[n]=nd; q.push(n);}}
+    if(y<H-1){const n=p+W; if(band[n]&&dist[n]<0){dist[n]=nd; q.push(n);}}
+  }
+  let dmax=1;
+  for(let k=0;k<W*H;k++) if(band[k]&&dist[k]>dmax) dmax=dist[k];
+  const wOut=0.16;
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    const k=y*W+x; if(!band[k]) continue;
+    const d=dist[k]; if(d<0) continue;
+    const t=Math.pow(Math.min(d/dmax,1),0.6);
+    rawAlpha[k]= rawAlpha[k]*(wOut+(1-wOut)*t);
+  }
+}
+async function runOptEdge(){
+  if(!rawAlpha || !srcImg){ flashErase("请先选择照片并完成自动抠图"); return; }
+  const band=buildEdgeBand();
+  const bb=bandBBox(band);
+  if(!bb){ flashErase("未识别到边缘：请先用蓝画笔在人物边缘涂抹，或拖宽『优化边缘宽度』"); return; }
+  if(busy){ flashErase("正在进行其他处理，请稍候"); return; }
+  setBusy(true,"边缘优化中 · 局部重抠…");
+  await new Promise(r=>setTimeout(r,40));
+  try{
+    const snap= rawAlpha.slice(0);        // 整图快照（仅优化时一次）
+    let applied=false;
+    if(ortSession){
+      const reg= await inferRegion(bb.x, bb.y, bb.w, bb.h, 16);
+      for(let j=0;j<reg.ih;j++){ const yy=reg.iy+j; if(yy<0||yy>=PH) continue;
+        for(let i=0;i<reg.iw;i++){ const xx=reg.ix+i; if(xx<0||xx>=PW) continue;
+          rawAlpha[yy*PW+xx]= reg.alpha[j*reg.iw+i]; } }
+      applied=true;
+    }
+    applyBandFade(band, bb.x, bb.y, bb.w, bb.h);
+    edgeStack.push({alpha:snap});
+    if(edgeStack.length>16) edgeStack.shift();
+    shadowEraseGap(band);                // 抹除区与边缘带重叠处保持抹除透明，避免半透明把残留又救回
+    refine();
+    setBusy(false, applied? "优化完成 · 已局部重抠并半透明柔化边缘" : "模型未就绪：仅做了半透明柔化");
+    syncEdgeUI();
+  }catch(e){
+    setBusy(false,"精修失败："+(e&&e.message||e));
+  }
+}
+function shadowEraseGap(band){
+  // 优化后的边缘带若落回已抹除(透明)区，保持其抹除：把 erase 区在带内仍强制 alpha 低
+  if(!eraseOnes.length) return;
+  const W=PW;
+  for(let i=0;i<eraseOnes.length;i++){ const p=eraseOnes[i]; if(band[p]) rawAlpha[p]=0; }
+}
+function edgeUndo(){
+  const last=edgeStack.pop();
+  if(!last) return;
+  rawAlpha.set(last.alpha);
+  refine(); syncEdgeUI();
+}
+function syncEdgeUI(){
+  $("btnEdgeUndo").disabled=edgeStack.length===0;
+  $("btnEdgeMark").classList.toggle("on",edgeMarkMode);
+  $("wrap").classList.toggle("erasing",edgeMarkMode);
+  if(edgeMarkAny()){ $("edgeStat").style.display="block"; $("edgeStat").textContent=`已标记精修区 ${markCount()} 像素`; }
+  else if(edgeStack.length){ $("edgeStat").style.display="block"; $("edgeStat").textContent=`已优化 ${edgeStack.length} 次（可撤销/拖宽滑条再优化）`; }
+  else $("edgeStat").style.display="none";
+}
+let edgeMarkCanvas=null;      // 蓝色画笔视觉叠加层（仅预览，不进导出）
+function toggleEdgeMark(){
+  if(edgeMarkMode){ edgeMarkMode=false; }
+  else{ edgeMarkMode=true; pickMode=false; hideEraseFloat(); syncEraseUI(); }
+  syncEdgeUI(); refreshStage();
+}
+let edgeMarkRaf=0;
+function edgeMarkRefresh(){ cancelAnimationFrame(edgeMarkRaf); edgeMarkRaf=requestAnimationFrame(refreshStage); }
 function composeNow(){
   if(!srcImg) return;
   if(maskDirty && !buildMaskCanvas()) return;
@@ -1534,6 +1633,7 @@ function refreshStage(){
   ctx.imageSmoothingEnabled = sc<=2;          // 放大超 2 倍时用像素点锐利查看轮廓
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(dsrc,0,0,sw,sh);
+  if(edgeMarkMode && edgeMarkCanvas) ctx.drawImage(edgeMarkCanvas,0,0,sw,sh);   // 蓝画笔标记叠加（仅预览）
   $("btnExport").disabled = !renderCanvas;
   if(srcImg) $("dropHint").style.display="none";
   $("zPct").value = view.auto? "适应" : Math.round(view.z*100)+"%";
@@ -1633,16 +1733,20 @@ function bindUI(){
   const wr=$("wrap");
   wr.addEventListener("wheel",e=>{ if(e.ctrlKey||e.metaKey){ e.preventDefault(); zoomBy(e.deltaY<0?1.12:0.9); } },{passive:false});
   wr.addEventListener("pointerdown",e=>{
+    if(edgeMarkMode){ edgeStrokeStart(e); return; }          // 边缘精修：蓝画笔涂抹精修区
     if(pickMode){ startStroke(e); return; }                // 取色模式：按下即开始圈选（点击=单点、拖动=累积连通域）
     if(wr.scrollWidth<=wr.clientWidth && wr.scrollHeight<=wr.clientHeight) return;
     pan={x:e.clientX,y:e.clientY,lx:wr.scrollLeft,ly:wr.scrollTop};
     wr.classList.add("dragning");
     try{ wr.setPointerCapture(e.pointerId); }catch(_){}
   });
-  wr.addEventListener("pointermove",e=>{ if(stroke&&stroke.active){ stroke.moved=true; strokeAdd(e.clientX,e.clientY); return; } if(pan){ wr.scrollLeft=pan.lx-(e.clientX-pan.x); wr.scrollTop=pan.ly-(e.clientY-pan.y); } });
+  wr.addEventListener("pointermove",e=>{
+    if(edgeStroke&&edgeStroke.active){ edgeStrokeAdd(e.clientX,e.clientY); return; }
+    if(stroke&&stroke.active){ stroke.moved=true; strokeAdd(e.clientX,e.clientY); return; }
+    if(pan){ wr.scrollLeft=pan.lx-(e.clientX-pan.x); wr.scrollTop=pan.ly-(e.clientY-pan.y); } });
   const endPan=()=>{ pan=null; wr.classList.remove("dragning"); };
-  wr.addEventListener("pointerup",e=>{ if(stroke&&stroke.active){ endStroke(); } else endPan(); });
-  wr.addEventListener("pointercancel",e=>{ if(stroke&&stroke.active){ endStroke(); } else endPan(); });
+  wr.addEventListener("pointerup",e=>{ if(edgeStroke&&edgeStroke.active){ edgeStrokeEnd(); } else if(stroke&&stroke.active){ endStroke(); } else endPan(); });
+  wr.addEventListener("pointercancel",e=>{ if(edgeStroke&&edgeStroke.active){ edgeStrokeEnd(); } else if(stroke&&stroke.active){ endStroke(); } else endPan(); });
   window.addEventListener("resize",()=>refreshStage());
 
   // 精修滑块：连续输入用冷却节流合并重算（避免每帧跑全流水线），松手后仍会渲染最终值
@@ -1680,19 +1784,20 @@ function bindUI(){
   });
 
   // 残留补救取色
-  const togglePick=type=>{ if(pickMode && pickType===type) pickMode=false; else{ pickType=type; pickMode=true; } syncEraseUI(); };
+  const togglePick=type=>{ if(pickMode && pickType===type) pickMode=false; else{ pickType=type; pickMode=true; } if(pickMode && edgeMarkMode){ edgeMarkMode=false; syncEdgeUI(); } syncEraseUI(); };
   $("btnErase").onclick=()=>togglePick('erase');
   $("btnRestore").onclick=()=>togglePick('restore');
   $("btnEraseUndo").onclick=eraseUndo;
   $("btnEraseRedo").onclick=eraseRedo;
   $("btnEraseClear").onclick=eraseClear;
-  const ef=$("eraseFloat");
-  ef.addEventListener("pointerdown",e=>e.stopPropagation());   // 防浮条点击被当成画面取色
-  $("eTol").oninput=e=>{ const v=+e.target.value; $("eTolNum").value=v; scheduleRepaint(v); };
-  const efNum=$("eTolNum");
-  efNum.onchange=()=>{ const v=clamp(+efNum.value,0,100); $("eTol").value=v; efNum.value=v; scheduleRepaint(v); };
-  efNum.onfocus=()=>efNum.select();
-  $("efDone").onclick=()=>hideEraseFloat();
+  // 边缘精修：涂抹标记 / 优化 / 撤销；优化边缘宽度滑条联动
+  $("btnEdgeMark").onclick=toggleEdgeMark;
+  $("btnRunEdge").onclick=runOptEdge;
+  $("btnEdgeUndo").onclick=edgeUndo;
+  const ew=$("sEdgeW"), ewn=$("sEdgeWNum");
+  ew.oninput=()=>{ ewn.value=ew.value; };
+  ewn.onchange=()=>{ const v=clamp(+ewn.value,0,100); ewn.value=v; ew.value=v; };
+  syncEdgeUI();
   syncEraseUI();
 }
 
