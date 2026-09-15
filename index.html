@@ -137,7 +137,7 @@
       <div class="drop-hint" id="dropHint">
         <div class="icon">🖼️</div>
         <div class="big">拖入 / 点击选择 / 粘贴 主体照片</div>
-        <small>支持 PNG、JPG、WebP、GIF、BMP、SVG、AVIF 等浏览器可解码格式（iPhone 的 HEIC 请先转成 JPG）；抠图后保持原分辨率导出</small>
+        <small>支持 PNG、JPG、WebP、GIF、BMP、SVG、AVIF 等浏览器可解码格式；iPhone 的 HEIC 请先在手机上转成 JPG（Safari 或已装「HEIF 图片扩展」解码器的 Edge/Chrome 可直接打开）；抠图后保持原分辨率导出</small>
       </div>
       <canvas id="show" width="960" height="960"></canvas>
       <input type="file" id="fileInput" accept="image/*" class="hide">
@@ -515,8 +515,8 @@ let keepOnes=[];                     // 强制保留索引（与 keepMask==1 并
 let eraseStack=[];                   // 撤销栈：每项 {t:'e'|'r', idx:Int32Array}
 let eraseRedoStack=[];               // 重做栈：撤销时压入，重做时重放（同样条目）
 let srcPix=null;                     // 原图像素缓存（首次取色时提取）
-const MAX_ERASE=50000;               // 单次连通域面积上限：超限截断保留而非回滚，保证始终能取色
-const MAX_WALK=2000000;              // 单次 BFS 总访问量上限（含穿越已抹除区），防内存/耗时失控
+const MAX_ERASE=400000;              // 单次连通域面积上限：超限截断保留而非回滚，保证能整块取满常见背景/色块
+const MAX_WALK=6000000;              // 单次 BFS 总访问量上限（含穿越已抹除区），防内存/耗时失控
 let eraseF={dirty:true, band:null, fac:null};   // 抹除边缘羽化几何缓存：仅在抹除/撤销/清空时重建
 let eraseBandSrc=null, eraseSrcDirty=false;      // 羽化带颜色修复源（独立于去杂色开关，始终生效）
 function refine(){
@@ -1051,7 +1051,7 @@ function flashErase(msg){
 /* —— 取色匹配：锚点相对容差 + 邻域梯度 + 可跳跃间隙 + 感知容差曲线 —— */
 function colMatch(pp,cr,cg,cb,thr2){ const p4=pp*4; const dr=srcPix[p4]-cr, dg=srcPix[p4+1]-cg, db=srcPix[p4+2]-cb; return dr*dr+dg*dg+db*db<=thr2; }
 function colDist2(a,b){ const p4=a*4,p5=b*4; const dr=srcPix[p4]-srcPix[p5], dg=srcPix[p4+1]-srcPix[p5+1], db=srcPix[p4+2]-srcPix[p5+2]; return dr*dr+dg*dg+db*db; }
-const ERASE_GRAD=22;              // ①邻域梯度上限：卡住颜色/亮度突变，防止越过物体边缘蔓延到无关区域
+const ERASE_GRAD=30;              // ①邻域梯度上限：卡住颜色/亮度突变，防止越过物体边缘蔓延到无关区域
 const ERASE_GAP=2;                // ②可跳跃间隙：允许穿过 ≤GAP 个颜色偏离的桥接像素，弥补低档被噪点/细缝切断的漏识
 /* —— 画线识别区域：整条笔迹作色样 → 自动推断目标色域 → 以全部笔迹像素为种子多起点连通扩展 —— */
 function pickRef(rs,gs,bs){
@@ -1063,8 +1063,11 @@ function autoThr2(rs,gs,bs,cr,cg,cb){
   const ds=new Array(rs.length);
   for(let i=0;i<rs.length;i++) ds[i]=(rs[i]-cr)**2+(gs[i]-cg)**2+(bs[i]-cb)**2;
   ds.sort((a,b)=>a-b);
-  const p=ds[Math.min(ds.length-1, Math.floor(ds.length*0.88))];
-  return Math.max(p*1.1, 36);
+  const p=ds[Math.min(ds.length-1, Math.floor(ds.length*0.9))];
+  // 返回「平方距离」阈值（colMatch 内是 dr²+dg²+db²<=thr2）。
+  // 容差放大以跨越同一色块的自然渐变/噪点；下限 170*170 对应半径 170 的色域，
+  // 保证单笔能把常见色块贴满边缘整体选中，而非仅画线附近半径≈13 的一小点。
+  return Math.max(p*1.5, 170*170);
 }
 function growRegion(seeds, mode){
   if(!eraserMask) eraserMask=new Uint8Array(PW*PH);
@@ -1080,6 +1083,10 @@ function growRegion(seeds, mode){
   if(!seedSet.size) return {list:null, noop:true, msg: restored?"请划过一段已被去除的透明区域后再松开":"请划过主体区域的颜色后再松开"};
   const ref=pickRef(rs,gs,bs), cr=ref[0], cg=ref[1], cb=ref[2];
   const thr2=autoThr2(rs,gs,bs,cr,cg,cb);
+  // 运行均值：随已选区域颜色缓慢漂移，从而把同一色块内的渐变/明暗整体跟随到边缘，
+  // 而不被「固定参照色」的距离上限卡在画线附近；邻域梯度(ERASE_GRAD)负责在异色边界处停住。
+  let rm=cr, rgm=cg, rbm=cb;
+  const ALPHA=0.06;
   const seen=new Uint8Array(W*H);
   const q=[]; let qh=0; const out=[];
   for(const k of seedSet){
@@ -1093,8 +1100,13 @@ function growRegion(seeds, mode){
     if(seen[pp]) return;
     seen[pp]=1;
     if(restored ? !(eraserMask[pp]===1||rawAlpha[pp]<0.5) : rawAlpha[pp]<A_MIN) return;   // 边界/非法区停：防越物体边缘蔓延
-    const localOK=colDist2(pp,src)<=grad2;                   // 邻域连续：须与来源色接近
-    if(colMatch(pp,cr,cg,cb,thr2) && localOK){ out.push(pp); q.push([pp,GAP]); }
+    const p4=pp*4;
+    const dr=srcPix[p4]-rm, dg=srcPix[p4+1]-rgm, db=srcPix[p4+2]-rbm;
+    const dm2=dr*dr+dg*dg+db*db;
+    const localOK=colDist2(pp,src)<=grad2;                   // 邻域连续：须与来源色接近，卡住异色物体边界
+    if(localOK && dm2<=thr2){ out.push(pp); q.push([pp,GAP]);   // 命中运行均值：跟随渐变整体贴边
+      rm+=dr*ALPHA; rgm+=dg*ALPHA; rbm+=db*ALPHA; }
+    else if(colMatch(pp,cr,cg,cb,thr2) && localOK){ out.push(pp); q.push([pp,GAP]); }   // 命中起始参照：锚定整区
     else if(localOK && gap>0) q.push([pp,gap-1]);            // 可跳跃间隙：补小缝
   };
   while(qh<q.length){
@@ -1392,11 +1404,19 @@ async function runOptEdge(){
     if(edgeStack.length>16) edgeStack.shift();
     shadowEraseGap(band);                // 抹除区与边缘带重叠处保持抹除透明，避免半透明把残留又救回
     refine();
+    // 清除用户画的蓝笔边缘标记，露出重抠/半透明的真实效果
+    clearEdgeMarks();
     setBusy(false, applied? "优化完成 · 已局部重抠并半透明柔化边缘" : "模型未就绪：仅做了半透明柔化");
     syncEdgeUI();
   }catch(e){
     setBusy(false,"精修失败："+(e&&e.message||e));
   }
+}
+function clearEdgeMarks(){
+  if(edgeMarkCanvas){ edgeMarkCanvas=null; }
+  if(edgeMarkMask) edgeMarkMask.fill(0);
+  if(edgeMarkMode){ edgeMarkMode=false; }
+  refreshStage();
 }
 function shadowEraseGap(band){
   // 优化后的边缘带若落回已抹除(透明)区，保持其抹除：把 erase 区在带内仍强制 alpha 低
