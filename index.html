@@ -197,7 +197,7 @@
       <div class="hint">0–10（切向抗锯齿强度，0 即有默认去锯齿）；0–5 平滑又清晰，更大值更柔、慎用</div>
       <div class="row" style="align-items:center;margin-top:14px">
         <button class="btn" id="btnRestore" title="白色画线：划过要保留的地方（误删主体、发丝），松手自动把与其同色的整片区域恢复为主体">✅ 勾选 · 保留</button>
-        <button class="btn" id="btnErase" title="白色画线：划过要去掉的残留或背景，松手自动圈选与其同色的整片区域并删除">🗑 反选 · 去除</button>
+<button class="btn" id="btnErase" title="黑色画线：划过要去掉的残留或背景，松手自动圈选与其同色的整片区域并删除">🗑 反选 · 去除</button>
         <button class="btn" id="btnEraseUndo" title="撤销上一次补救/反选操作" disabled>↩ 撤销</button>
         <button class="btn" id="btnEraseRedo" title="重做上一次被撤销的补救/反选操作" disabled>↪ 重做</button>
         <button class="btn" id="btnEraseClear" title="清除所有补救/反选，恢复原抠图结果" disabled>✖ 清空</button>
@@ -1143,10 +1143,14 @@ function initSrcPixIf(){
 /* —— 画线识别：pickMode 时按住拖动收集笔迹颜色样本，松手按整条笔迹自动推断色域、
    多起点连通扩展，选中与其同色的整片区域，聚合为一条可撤销操作 —— */
 let stroke=null, pan=null;
+let strokeCanvas=null;   // 画线笔迹可视化：勾选=白细线、反选=黑细线（仅预览）
 function startStroke(e){
   if(!rawAlpha){ flashErase(pickType==='restore'?"请先完成抠图，再使用勾选·保留":"请先完成抠图，再使用反选·去除"); return; }
   initSrcPixIf();
-  stroke={ active:true, type:pickType, samples:[], visited:new Set() };
+  stroke={ active:true, type:pickType, samples:[], visited:new Set(), lastX:null, lastY:null };
+  // 新建实时笔迹画布（PW×PH，白/黑单像素细线，缩放时随图像一起显示）
+  strokeCanvas=document.createElement("canvas");
+  strokeCanvas.width=PW; strokeCanvas.height=PH;
   pan=null; $("wrap").classList.remove("dragning");
   try{ $("wrap").setPointerCapture(e.pointerId); }catch(_){}
   strokeAdd(e.clientX,e.clientY);
@@ -1158,8 +1162,18 @@ function strokeAdd(cx,cy){
   const rect=$("show").getBoundingClientRect();
   const x=Math.floor((cx-rect.left)/rect.width*W), y=Math.floor((cy-rect.top)/rect.height*H);
   if(x<0||y<0||x>=W||y>=H) return;
-  const k=y*W+x; if(stroke.visited.has(k)) return; stroke.visited.add(k);
-  stroke.samples.push(k);
+  // 细线实时绘制：从前一点连线到当前点（白=勾选、黑=反选），并触发预览刷新
+  const s=stroke, mctx=strokeCanvas.getContext("2d");
+  mctx.strokeStyle = s.type==='restore' ? "#ffffff" : "#000000";   // 勾选=白细线、反选=黑细线
+  mctx.lineWidth=1; mctx.lineCap="butt";
+  mctx.beginPath();
+  if(s.lastX!==null){ mctx.moveTo(s.lastX+0.5, s.lastY+0.5); mctx.lineTo(x+0.5, y+0.5); }
+  else mctx.moveTo(x+0.5, y+0.5);
+  mctx.stroke();
+  s.lastX=x; s.lastY=y;
+  const k=y*W+x; if(s.visited.has(k)) return; s.visited.add(k);
+  s.samples.push(k);
+  edgeMarkRefresh();
 }
 function endStroke(){
   if(!stroke) return;
@@ -1174,6 +1188,8 @@ function endStroke(){
       eraseStack.push({ t:s.type==='restore'?'r':'e', idx:Int32Array.from(new Set(res.list)), wasErased });
     }
   }
+  strokeCanvas=null;                       // 松手清除笔迹线
+  edgeMarkRefresh();
   redrawErase(true); syncEraseUI();
 }
 function hideEraseFloat(){}
@@ -1636,6 +1652,7 @@ function refreshStage(){
   ctx.imageSmoothingEnabled = sc<=2;          // 放大超 2 倍时用像素点锐利查看轮廓
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(dsrc,0,0,sw,sh);
+  if(strokeCanvas) ctx.drawImage(strokeCanvas,0,0,sw,sh);              // 画线笔迹叠加（白/黑细线，仅预览）
   if(edgeMarkMode && edgeMarkCanvas) ctx.drawImage(edgeMarkCanvas,0,0,sw,sh);   // 蓝画笔标记叠加（仅预览）
   $("btnExport").disabled = !renderCanvas;
   if(srcImg) $("dropHint").style.display="none";
